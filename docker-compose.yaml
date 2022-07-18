@@ -1,0 +1,5 @@
+services:
+  ft_ping:
+    build: .
+    volumes:
+      - .:/data

@@ -3,7 +3,7 @@ NAME = ft_ping
 SRCS = main.c
 OBJS = $(SRCS:.c=.o)
 
-CFLAGS = -Wall -Wextra -Werror -Ofast -fsanitize=address -g
+CFLAGS = -Wall -Wextra -Werror -Ofast
 
 all: $(NAME)
 
@@ -20,3 +20,7 @@ fclean: clean
 	rm -rf $(NAME)
 
 re: fclean all
+
+docker:
+	docker compose build
+	docker compose run ft_ping sh

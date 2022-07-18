@@ -3,19 +3,20 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
-int		verbose = 0;
-int		help = 0;
-char	*host = NULL;
+int				verbose = 0;
+int				help = 0;
+char			*host = NULL;
 struct addrinfo	*addr;
-char	ip[INET6_ADDRSTRLEN];
+char			ip[INET6_ADDRSTRLEN];
 
-int		packets_count = 0;
-int		packets_received = 0;
-float	round_trip_min = 0;
-float	round_trip_avg = 0;
-float	round_trip_max = 0;
-float	round_trip_stddev = 0;
+int				packets_count = 0;
+int				packets_received = 0;
+float			round_trip_min = 0;
+float			round_trip_avg = 0;
+float			round_trip_max = 0;
+float			round_trip_stddev = 0;
 
 int		show_help(void)
 {
