@@ -21,6 +21,9 @@ fclean: clean
 
 re: fclean all
 
+run: all
+	./$(NAME) google.com
+
 docker:
 	docker compose build
 	docker compose run ft_ping sh

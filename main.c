@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <stdint.h>
 
 #define BUF_SIZE 1024
 
@@ -47,6 +48,56 @@ void	statistics(void)
 }
 
 int	sock;
+
+void	add_ping_option(uint16_t type, uint16_t length, char *data)
+{
+	[0] = type >> 8;
+	[1] = type % 0xFF;
+	[2] = length >> 8;
+	[3] = length % 0xFF;
+	for (int i = 0; i < length; ++i)
+		[4 + i] = data[i];
+}
+
+// https://www.rfc-editor.org/rfc/rfc6450.html#section-3
+// Data is send in network byte order (big endian)
+
+void	craft_checksum()
+{
+
+}
+
+char	*craft_id(int length)
+{
+	srand(time());
+
+	static char	buf[256];
+	for (int i = 0; i < length; ++i)
+		buf[i] = rand() & 0xFF;
+	return (buf);
+}
+
+char	*craft_u32(uint32_t n)
+{
+	static char	buf[4];
+
+	for (int i = 4; i--;)
+	{
+		buf[i] = n & 0xFF;
+		n >>= 8;
+	}
+	return (buf);
+}
+
+void	craft_ping_packet()
+{
+	// Version
+	add_ping_option(0, 1, { 2 });
+	// Client ID
+	add_ping_option(1, 16, craft_id(16));
+	// Sequence number
+	add_ping_option(2, 4, craft_u32(0));
+}
 
 void	ping(void)
 {
