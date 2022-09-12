@@ -8,7 +8,11 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include "icmphdr.h"
+
 #define BUF_SIZE 1024
+
+#define SWAP_ENDIANESS_16(n) ((n & 0xff) << 8 | (n >> 8))
 
 int				verbose = 0;
 int				help = 0;
@@ -49,87 +53,105 @@ void	statistics(void)
 
 int	sock;
 
-void	add_ping_option(uint16_t type, uint16_t length, char *data)
-{
-	[0] = type >> 8;
-	[1] = type % 0xFF;
-	[2] = length >> 8;
-	[3] = length % 0xFF;
-	for (int i = 0; i < length; ++i)
-		[4 + i] = data[i];
-}
-
 // https://www.rfc-editor.org/rfc/rfc6450.html#section-3
+// https://fr.wikipedia.org/wiki/Internet_Control_Message_Protocol
 // Data is send in network byte order (big endian)
 
-void	craft_checksum()
+void	craft_ping_option(char **ptr, uint16_t type, uint16_t length, char *data)
 {
-
-}
-
-char	*craft_id(int length)
-{
-	srand(time());
-
-	static char	buf[256];
+	*(*ptr)++ = type >> 8;
+	*(*ptr)++ = type % 0xFF;
+	*(*ptr)++ = length >> 8;
+	*(*ptr)++ = length % 0xFF;
 	for (int i = 0; i < length; ++i)
-		buf[i] = rand() & 0xFF;
-	return (buf);
+		*(*ptr)++ = data[i];
 }
 
 char	*craft_u32(uint32_t n)
 {
 	static char	buf[4];
+	int			i = 4;
 
-	for (int i = 4; i--;)
+	while (i)
 	{
-		buf[i] = n & 0xFF;
+		buf[--i] = n & 0xFF;
 		n >>= 8;
 	}
 	return (buf);
 }
 
-void	craft_ping_packet()
-{
-	// Version
-	add_ping_option(0, 1, { 2 });
-	// Client ID
-	add_ping_option(1, 16, craft_id(16));
-	// Sequence number
-	add_ping_option(2, 4, craft_u32(0));
+uint16_t	checksum(void *data_ptr, size_t data_size) {
+	uint16_t	*data = data_ptr;
+	uint64_t	sum = 0;
+
+	while (data_size >= sizeof(*data)) {
+		sum += *data++;
+		data_size -= sizeof(*data);
+	}
+	if (data_size) {
+		sum += *(uint8_t *)data;
+	}
+
+	while (sum & ~0xffff) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
+	return (sum);
 }
+
+icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
+{
+	return ((icmphdr_t){
+		.type = ICMP_ECHO,
+		.code = 0,
+		.un.echo.id = SWAP_ENDIANESS_16(getpid()),
+		.un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq)
+	});
+}
+
+typedef struct {
+	icmphdr_t	icmphdr;
+	char		message[64 - sizeof(icmphdr_t)];
+}	ping_packer_t;
 
 void	ping(void)
 {
-	int		icmp_seq = packets_count;
-	int		ttl = 0;
-	float	time = 0;
+	uint16_t	icmp_seq = packets_count;
+	int			ttl = 0;
+	float		time = 0;
 
 	errno = 0;
-	ssize_t	sent = sendto(sock, "Hello world", 11, 0, addr->ai_addr, addr->ai_addrlen);
-	printf("sent %ld\n", sent);
-	
+	ping_packer_t	ping_packet = {
+		craft_ping_packet(icmp_seq),
+		"bonjour google"
+	};
+	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
+
+	ssize_t	sent = sendto(sock, &ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
+	printf("sent %ld/%ld\n", sent, sizeof(ping_packet));
+
+	printf("%d\n", errno);
 	perror("sendto");
 
-	char			buf[BUF_SIZE];
-	struct iovec	iov = {buf, BUF_SIZE};
+	errno = 0;
+	char			recvbuf[BUF_SIZE];
+	struct iovec	iov = { recvbuf, BUF_SIZE };
+	char			controlbuf[BUF_SIZE];
 	struct msghdr	msg = {
-		.msg_name = addr->ai_addr,
-		.msg_namelen = addr->ai_addrlen,
 		.msg_iov = &iov,
 		.msg_iovlen = 1,
-		.msg_control = NULL,
-		.msg_controllen = 0,
-		.msg_flags = 0
+		.msg_control = &controlbuf,
+		.msg_controllen = sizeof(controlbuf)
 	};
-	errno = 0;
+	printf("recvmsg...\n");
 	ssize_t	len = recvmsg(sock, &msg, 0);
 	// ssize_t	len = 0;
 
 	perror("recvmsg");
 	printf("msg received\n");
-	if (len > 0)
-		printf("write %ld\n", write(1, buf, len));
+	if (len > 0) {
+		printf("recved %ld\n", write(1, recvbuf, len));
+		printf("recved %ld\n", write(1, controlbuf, len));
+	}
 
 	++packets_count;
 	//++packets_received;
@@ -140,7 +162,6 @@ void	ping(void)
 
 int		main(int ac, const char **av)
 {
-
 	while (--ac)
 	{
 		if (*av[ac] == '-')
@@ -159,18 +180,31 @@ int		main(int ac, const char **av)
 	if (!host || help)
 		return (show_help());
 
-	if (getaddrinfo(host, "0", 0, &addr) < 0)
+	struct addrinfo hints = {
+		.ai_family = AF_INET,
+		.ai_socktype = SOCK_RAW,
+		.ai_protocol = IPPROTO_ICMP
+	};
+	if (getaddrinfo(host, NULL, &hints, &addr) < 0)
 		return (error_resolution(host));
 
-	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
+	sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	if (sock < 0)
 	{
-		printf("ping: socket: Operation not permitted\n");
+		perror("ping: socket");
 		exit(1);
 	}
 
+	// int	hincl = 1;
+	// Inform the kernel do not fill up the headers' structure, we fabricated our own
+	// https://stackoverflow.com/questions/48338190/sending-custom-tcp-packet-using-sendto-in-c
+	// if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &hincl, sizeof(hincl)) < 0) {
+	// 	perror("ping: setsockopt");
+	// 	exit(1);
+	// }
+
 	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, ip, INET6_ADDRSTRLEN);
-	printf("PING %s (%s): 56 data bytes\n", host, ip);
+	printf("PING %s (%s): 64 data bytes\n", host, ip);
 
 	signal(SIGALRM, (void (*)())ping);
 	ping();
