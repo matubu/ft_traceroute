@@ -7,11 +7,13 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <sys/time.h>
 
 #include "icmphdr.h"
 
 #define BUF_SIZE 1024
 
+// htons could be used too
 #define SWAP_ENDIANESS_16(n) ((n & 0xff) << 8 | (n >> 8))
 
 int				verbose = 0;
@@ -26,6 +28,10 @@ float			round_trip_min = 0;
 float			round_trip_avg = 0;
 float			round_trip_max = 0;
 float			round_trip_stddev = 0;
+
+int				ttl = 37;
+
+// https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
 
 int		show_help(void)
 {
@@ -55,6 +61,7 @@ int	sock;
 
 // https://www.rfc-editor.org/rfc/rfc6450.html#section-3
 // https://fr.wikipedia.org/wiki/Internet_Control_Message_Protocol
+// https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
 // Data is send in network byte order (big endian)
 
 void	craft_ping_option(char **ptr, uint16_t type, uint16_t length, char *data)
@@ -100,12 +107,15 @@ uint16_t	checksum(void *data_ptr, size_t data_size) {
 
 icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
 {
-	return ((icmphdr_t){
-		.type = ICMP_ECHO,
-		.code = 0,
-		.un.echo.id = SWAP_ENDIANESS_16(getpid()),
-		.un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq)
-	});
+	icmphdr_t	icmphdr;
+	memset(&icmphdr, 0, sizeof(icmphdr));
+	icmphdr.type = ICMP_ECHO;
+	icmphdr.code = 0;
+	icmphdr.checksum = 0;
+	icmphdr.un.echo.id = SWAP_ENDIANESS_16(getpid());
+	icmphdr.un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq);
+
+	return (icmphdr);
 }
 
 typedef struct {
@@ -122,7 +132,7 @@ void	ping(void)
 	errno = 0;
 	ping_packer_t	ping_packet = {
 		craft_ping_packet(icmp_seq),
-		"bonjour google"
+		"0123456789"
 	};
 	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
 
@@ -132,26 +142,28 @@ void	ping(void)
 	printf("%d\n", errno);
 	perror("sendto");
 
+	// https://stackoverflow.com/questions/51833241/recvmsg-returns-resource-temporarily-unavailable
 	errno = 0;
-	char			recvbuf[BUF_SIZE];
-	struct iovec	iov = { recvbuf, BUF_SIZE };
-	char			controlbuf[BUF_SIZE];
-	struct msghdr	msg = {
-		.msg_iov = &iov,
-		.msg_iovlen = 1,
-		.msg_control = &controlbuf,
-		.msg_controllen = sizeof(controlbuf)
-	};
+	char			iovbuf[1024];
+	struct iovec	iov = { iovbuf, BUF_SIZE };
+	char			controlbuf[1024];
+	struct msghdr	msg;
+	memset(&msg, 0, sizeof(msg));
+	// msg.msg_name = addr->ai_addr,
+	// msg.msg_namelen = addr->ai_addrlen,
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = controlbuf;
+	msg.msg_controllen = sizeof(controlbuf);
+
 	printf("recvmsg...\n");
 	ssize_t	len = recvmsg(sock, &msg, 0);
-	// ssize_t	len = 0;
 
-	perror("recvmsg");
 	printf("msg received\n");
-	if (len > 0) {
-		printf("recved %ld\n", write(1, recvbuf, len));
-		printf("recved %ld\n", write(1, controlbuf, len));
-	}
+	// if (len > 0) {
+	// 	printf("recved %ld\n", write(1, recvbuf, len));
+	// 	printf("recved %ld\n", write(1, controlbuf, len));
+	// }
 
 	++packets_count;
 	//++packets_received;
@@ -180,11 +192,12 @@ int		main(int ac, const char **av)
 	if (!host || help)
 		return (show_help());
 
-	struct addrinfo hints = {
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_RAW,
-		.ai_protocol = IPPROTO_ICMP
-	};
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_RAW;
+	hints.ai_protocol = IPPROTO_ICMP;
+
 	if (getaddrinfo(host, NULL, &hints, &addr) < 0)
 		return (error_resolution(host));
 
@@ -194,6 +207,17 @@ int		main(int ac, const char **av)
 		perror("ping: socket");
 		exit(1);
 	}
+
+	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+		perror("ping: setsockopt SO_RCVTIMEO");
+		exit(1);
+	}
+
+	// struct timeval timeout = {1, 0};
+	// if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+	// 	perror("ping: setsockopt SO_RCVTIMEO");
+	// 	exit(1);
+	// }
 
 	// int	hincl = 1;
 	// Inform the kernel do not fill up the headers' structure, we fabricated our own
