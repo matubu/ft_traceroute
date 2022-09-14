@@ -246,16 +246,13 @@ int		main(int ac, const char **av)
 		exit(1);
 	}
 
-	// const int isipv6 = addr->ai_family == AF_INET6;
-
 	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
 	if (sock < 0) {
 		perror("ping: socket");
 		exit(1);
 	}
 
-	printf("%d\n", isipv6);
-	if (setsockopt(sock, isipv6 ? IPPROTO_IPV6 : IPPROTO_IP, isipv6 ? IPV6_UNICAST_HOPS : IP_TTL, &ttl, sizeof(ttl)) < 0) {
+	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
 		perror("ping: setsockopt IP_TTL");
 		exit(1);
 	}
