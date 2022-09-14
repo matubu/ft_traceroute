@@ -60,12 +60,6 @@ int		show_help(void)
 	return (64);
 }
 
-int		error_resolution(const char *host)
-{
-	fprintf(stderr, "ping: cannot resolve %s: Unknown host\n", host);
-	return (68);
-}
-
 void	statistics(void)
 {
 	printf("\n");
@@ -75,6 +69,10 @@ void	statistics(void)
 		packets_received,
 		(1 - (float)packets_received / packets_count) * 100
 	);
+
+	if (packets_received == 0) {
+		exit(1);
+	}
 
 	round_trip_avg /= packets_received;
 
@@ -157,8 +155,14 @@ void	ping(void)
 		exit(1);
 	}
 
+	if (len == -1) {
+		perror("ping: recv");
+		goto next;
+	}
+
+	printf("%ld %ld\n", len, (sizeof(struct ip) + PACKET_SZ));
 	if (len < (ssize_t)(sizeof(struct ip) + PACKET_SZ)) {
-		puts("received nothing");
+		puts("received not everything");
 		goto next;
 	}
 
@@ -237,17 +241,21 @@ int		main(int ac, const char **av)
 	hints.ai_socktype = SOCK_RAW;
 	hints.ai_protocol = IPPROTO_ICMP;
 
-	if (getaddrinfo(host, NULL, &hints, &addr) < 0)
-		return (error_resolution(host));
+	if (getaddrinfo(host, NULL, &hints, &addr) < 0) {
+		fprintf(stderr, "ping: cannot resolve %s: Unknown host\n", host);
+		exit(1);
+	}
 
-	sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-	if (sock < 0)
-	{
+	// const int isipv6 = addr->ai_family == AF_INET6;
+
+	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
+	if (sock < 0) {
 		perror("ping: socket");
 		exit(1);
 	}
 
-	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+	printf("%d\n", isipv6);
+	if (setsockopt(sock, isipv6 ? IPPROTO_IPV6 : IPPROTO_IP, isipv6 ? IPV6_UNICAST_HOPS : IP_TTL, &ttl, sizeof(ttl)) < 0) {
 		perror("ping: setsockopt IP_TTL");
 		exit(1);
 	}
