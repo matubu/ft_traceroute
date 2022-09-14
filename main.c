@@ -8,14 +8,19 @@
 #include <errno.h>
 #include <stdint.h>
 #include <sys/time.h>
+#include <netinet/ip.h>
+#include <float.h>
+#include <math.h>
 
 #include "icmphdr.h"
 
 #define BUF_SIZE 1024
+#define PACKET_SZ 64
 
 // htons could be used too
 #define SWAP_ENDIANESS_16(n) ((n & 0xff) << 8 | (n >> 8))
 
+// TODO only one global variable
 int				verbose = 0;
 int				help = 0;
 char			*host = NULL;
@@ -24,14 +29,29 @@ char			ip[INET6_ADDRSTRLEN];
 
 int				packets_count = 0;
 int				packets_received = 0;
-float			round_trip_min = 0;
-float			round_trip_avg = 0;
-float			round_trip_max = 0;
-float			round_trip_stddev = 0;
+
+typedef struct times_s {
+	double				ms;
+	struct times_s	*next;
+}	times_t;
+double			round_trip_min = DBL_MAX;
+double			round_trip_avg = 0;
+double			round_trip_max = 0;
+double			round_trip_stddev = 0;
+times_t			*times = NULL;
 
 int				ttl = 37;
 
-int	sock;
+int				sock;
+
+#define malloc(n) ({ \
+	void	*ptr = malloc(n); \
+	if (ptr == NULL) { \
+		fprintf(stderr, "ping: allocation failed\n"); \
+		exit(1); \
+	} \
+	ptr; \
+})
 
 // https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
 
@@ -56,6 +76,16 @@ void	statistics(void)
 		packets_received,
 		(1 - (float)packets_received / packets_count) * 100
 	);
+
+	round_trip_avg /= packets_received;
+
+	for (times_t *it = times; it != NULL; it = it->next) {
+		double	deviation = it->ms - round_trip_avg;
+		round_trip_stddev += deviation * deviation;
+	}
+	round_trip_stddev = sqrt(round_trip_stddev / packets_received);
+
+	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n", round_trip_min, round_trip_avg, round_trip_max, round_trip_stddev);
 	exit(0);
 }
 
@@ -84,8 +114,7 @@ uint16_t	checksum(void *data_ptr, size_t data_size) {
 
 icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
 {
-	icmphdr_t	icmphdr;
-	memset(&icmphdr, 0, sizeof(icmphdr));
+	icmphdr_t	icmphdr = {0};
 	icmphdr.type = ICMP_ECHO;
 	icmphdr.code = 0;
 	icmphdr.un.echo.id = SWAP_ENDIANESS_16(getpid());
@@ -96,13 +125,12 @@ icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
 
 typedef struct {
 	icmphdr_t	icmphdr;
-	char		message[64 - sizeof(icmphdr_t)];
+	char		message[PACKET_SZ - sizeof(icmphdr_t)];
 }	ping_packer_t;
 
 void	ping(void)
 {
 	uint16_t	icmp_seq = packets_count;
-	float		time = 0;
 
 	ping_packer_t	ping_packet = {
 		craft_ping_packet(icmp_seq),
@@ -110,25 +138,61 @@ void	ping(void)
 	};
 	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
 
-	sendto(sock, &ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
-
-	char			iovbuf[1024];
-	struct iovec	iov = { iovbuf, BUF_SIZE };
-	struct msghdr	msg;
-	memset(&msg, 0, sizeof(msg));
+	char			iovbuf[BUF_SIZE];
+	struct iovec	iov = { iovbuf, sizeof(iovbuf) };
+	struct msghdr	msg = {0};
 	msg.msg_iov = &iov;
 	msg.msg_iovlen = 1;
 
+	struct timeval	start, end;
+	if (gettimeofday(&start, NULL) < 0) {
+		perror("ping: gettimeofday");
+		exit(1);
+	}
+	sendto(sock, (char *)&ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
 	++packets_count;
 	ssize_t	len = recvmsg(sock, &msg, 0);
-
-	if (len > 0) {
-		printf("recved %ld\n", write(1, iovbuf, len));
-		++packets_received;
+	if (gettimeofday(&end, NULL) < 0) {
+		perror("ping: gettimeofday");
+		exit(1);
 	}
 
-	printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f\n", len, ip, icmp_seq, ttl, time);
+	if (len < (ssize_t)(sizeof(struct ip) + PACKET_SZ)) {
+		puts("received nothing");
+		goto next;
+	}
 
+	icmphdr_t	*reply_icmphdr = (icmphdr_t *)(iovbuf + sizeof(struct ip));
+
+	if (reply_icmphdr->type != ICMP_ECHOREPLY) {
+		puts("not a reply");
+		goto next;
+	}
+
+	if (reply_icmphdr->un.echo.sequence != SWAP_ENDIANESS_16(icmp_seq)) {
+		puts("wrong sequence id");
+		goto next;
+	}
+
+	// TODO check data
+	// TODO check checksum
+
+	double		time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
+
+	round_trip_min = round_trip_min < time ? round_trip_min : time;
+	round_trip_avg += time;
+	round_trip_max = round_trip_max > time ? round_trip_max : time;
+
+	times_t	*node = malloc(sizeof(times_t));
+	node->ms = time;
+	node->next = times;
+	times = node;
+
+	++packets_received;
+
+	printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
+
+next:
 	alarm(1);
 }
 
@@ -152,8 +216,7 @@ int		main(int ac, const char **av)
 	if (!host || help)
 		return (show_help());
 
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof(hints));
+	struct addrinfo hints = {0};
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_RAW;
 	hints.ai_protocol = IPPROTO_ICMP;
@@ -180,7 +243,7 @@ int		main(int ac, const char **av)
 	}
 
 	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, ip, INET6_ADDRSTRLEN);
-	printf("PING %s (%s): 64 data bytes\n", host, ip);
+	printf("PING %s (%s): %d data bytes\n", host, ip, PACKET_SZ);
 
 	signal(SIGALRM, (void (*)())ping);
 	ping();
