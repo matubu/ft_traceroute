@@ -31,6 +31,8 @@ float			round_trip_stddev = 0;
 
 int				ttl = 37;
 
+int	sock;
+
 // https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
 
 int		show_help(void)
@@ -57,35 +59,10 @@ void	statistics(void)
 	exit(0);
 }
 
-int	sock;
-
 // https://www.rfc-editor.org/rfc/rfc6450.html#section-3
 // https://fr.wikipedia.org/wiki/Internet_Control_Message_Protocol
 // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
 // Data is send in network byte order (big endian)
-
-void	craft_ping_option(char **ptr, uint16_t type, uint16_t length, char *data)
-{
-	*(*ptr)++ = type >> 8;
-	*(*ptr)++ = type % 0xFF;
-	*(*ptr)++ = length >> 8;
-	*(*ptr)++ = length % 0xFF;
-	for (int i = 0; i < length; ++i)
-		*(*ptr)++ = data[i];
-}
-
-char	*craft_u32(uint32_t n)
-{
-	static char	buf[4];
-	int			i = 4;
-
-	while (i)
-	{
-		buf[--i] = n & 0xFF;
-		n >>= 8;
-	}
-	return (buf);
-}
 
 uint16_t	checksum(void *data_ptr, size_t data_size) {
 	uint16_t	*data = data_ptr;
@@ -125,38 +102,28 @@ typedef struct {
 void	ping(void)
 {
 	uint16_t	icmp_seq = packets_count;
-	int			ttl = 0;
 	float		time = 0;
 
-	errno = 0;
 	ping_packer_t	ping_packet = {
 		craft_ping_packet(icmp_seq),
-		"0123456789"
+		"hello world"
 	};
 	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
 
 	sendto(sock, &ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
 
-	// https://stackoverflow.com/questions/51833241/recvmsg-returns-resource-temporarily-unavailable
-	errno = 0;
 	char			iovbuf[1024];
 	struct iovec	iov = { iovbuf, BUF_SIZE };
-	char			controlbuf[1024];
 	struct msghdr	msg;
 	memset(&msg, 0, sizeof(msg));
-	// msg.msg_name = addr->ai_addr,
-	// msg.msg_namelen = addr->ai_addrlen,
 	msg.msg_iov = &iov;
 	msg.msg_iovlen = 1;
-	msg.msg_control = controlbuf;
-	msg.msg_controllen = sizeof(controlbuf);
 
 	++packets_count;
 	ssize_t	len = recvmsg(sock, &msg, 0);
 
 	if (len > 0) {
 		printf("recved %ld\n", write(1, iovbuf, len));
-		printf("recved %ld\n", write(1, controlbuf, len));
 		++packets_received;
 	}
 
@@ -201,24 +168,16 @@ int		main(int ac, const char **av)
 		exit(1);
 	}
 
-	// if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
-	// 	perror("ping: setsockopt SO_RCVTIMEO");
-	// 	exit(1);
-	// }
+	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+		perror("ping: setsockopt IP_TTL");
+		exit(1);
+	}
 
 	struct timeval timeout = {1, 0};
 	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
 		perror("ping: setsockopt SO_RCVTIMEO");
 		exit(1);
 	}
-
-	// int	hincl = 1;
-	// Inform the kernel do not fill up the headers' structure, we fabricated our own
-	// https://stackoverflow.com/questions/48338190/sending-custom-tcp-packet-using-sendto-in-c
-	// if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &hincl, sizeof(hincl)) < 0) {
-	// 	perror("ping: setsockopt");
-	// 	exit(1);
-	// }
 
 	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, ip, INET6_ADDRSTRLEN);
 	printf("PING %s (%s): 64 data bytes\n", host, ip);
@@ -229,6 +188,4 @@ int		main(int ac, const char **av)
 	signal(SIGINT, (void (*)())statistics);
 
 	while (1);
-
-	return (0);
 }
