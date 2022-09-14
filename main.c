@@ -102,7 +102,7 @@ uint16_t	checksum(void *data_ptr, size_t data_size) {
 	while (sum & ~0xffff) {
 		sum = (sum & 0xffff) + (sum >> 16);
 	}
-	return (sum);
+	return (~sum);
 }
 
 icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
@@ -111,7 +111,6 @@ icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
 	memset(&icmphdr, 0, sizeof(icmphdr));
 	icmphdr.type = ICMP_ECHO;
 	icmphdr.code = 0;
-	icmphdr.checksum = 0;
 	icmphdr.un.echo.id = SWAP_ENDIANESS_16(getpid());
 	icmphdr.un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq);
 
@@ -136,11 +135,7 @@ void	ping(void)
 	};
 	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
 
-	ssize_t	sent = sendto(sock, &ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
-	printf("sent %ld/%ld\n", sent, sizeof(ping_packet));
-
-	printf("%d\n", errno);
-	perror("sendto");
+	sendto(sock, &ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
 
 	// https://stackoverflow.com/questions/51833241/recvmsg-returns-resource-temporarily-unavailable
 	errno = 0;
@@ -156,17 +151,15 @@ void	ping(void)
 	msg.msg_control = controlbuf;
 	msg.msg_controllen = sizeof(controlbuf);
 
-	printf("recvmsg...\n");
+	++packets_count;
 	ssize_t	len = recvmsg(sock, &msg, 0);
 
-	printf("msg received\n");
-	// if (len > 0) {
-	// 	printf("recved %ld\n", write(1, recvbuf, len));
-	// 	printf("recved %ld\n", write(1, controlbuf, len));
-	// }
+	if (len > 0) {
+		printf("recved %ld\n", write(1, iovbuf, len));
+		printf("recved %ld\n", write(1, controlbuf, len));
+		++packets_received;
+	}
 
-	++packets_count;
-	//++packets_received;
 	printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f\n", len, ip, icmp_seq, ttl, time);
 
 	alarm(1);
@@ -208,16 +201,16 @@ int		main(int ac, const char **av)
 		exit(1);
 	}
 
-	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
-		perror("ping: setsockopt SO_RCVTIMEO");
-		exit(1);
-	}
-
-	// struct timeval timeout = {1, 0};
-	// if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+	// if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
 	// 	perror("ping: setsockopt SO_RCVTIMEO");
 	// 	exit(1);
 	// }
+
+	struct timeval timeout = {1, 0};
+	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+		perror("ping: setsockopt SO_RCVTIMEO");
+		exit(1);
+	}
 
 	// int	hincl = 1;
 	// Inform the kernel do not fill up the headers' structure, we fabricated our own

@@ -22,7 +22,7 @@ fclean: clean
 re: fclean all
 
 run: all
-	./$(NAME) google.com
+	sudo ./$(NAME) google.com
 
 docker:
 	docker compose build
