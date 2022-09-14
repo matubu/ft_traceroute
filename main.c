@@ -37,7 +37,6 @@ typedef struct times_s {
 double			round_trip_min = DBL_MAX;
 double			round_trip_avg = 0;
 double			round_trip_max = 0;
-double			round_trip_stddev = 0;
 times_t			*times = NULL;
 
 int				ttl = 37;
@@ -79,6 +78,7 @@ void	statistics(void)
 
 	round_trip_avg /= packets_received;
 
+	double			round_trip_stddev = 0;
 	for (times_t *it = times; it != NULL; it = it->next) {
 		double	deviation = it->ms - round_trip_avg;
 		round_trip_stddev += deviation * deviation;
@@ -162,20 +162,36 @@ void	ping(void)
 		goto next;
 	}
 
-	icmphdr_t	*reply_icmphdr = (icmphdr_t *)(iovbuf + sizeof(struct ip));
+	ping_packer_t	*received_packet = (ping_packer_t *)(iovbuf + sizeof(struct ip));
 
-	if (reply_icmphdr->type != ICMP_ECHOREPLY) {
+	uint16_t	received_checksum = received_packet->icmphdr.checksum;
+	received_packet->icmphdr.checksum = 0;
+	if (received_checksum != checksum(received_packet, sizeof(ping_packet))) {
+		puts("invalid checksum");
+		goto next;
+	}
+
+	if (received_packet->icmphdr.type != ICMP_ECHOREPLY) {
 		puts("not a reply");
 		goto next;
 	}
 
-	if (reply_icmphdr->un.echo.sequence != SWAP_ENDIANESS_16(icmp_seq)) {
+	if (received_packet->icmphdr.un.echo.sequence != ping_packet.icmphdr.un.echo.sequence) {
 		puts("wrong sequence id");
 		goto next;
 	}
 
-	// TODO check data
-	// TODO check checksum
+	if (received_packet->icmphdr.un.echo.id != ping_packet.icmphdr.un.echo.id) {
+		puts("wrong id");
+		goto next;
+	}
+
+	for (size_t i = 0; i < sizeof(received_packet->message); ++i) {
+		if (received_packet->message[i] != ping_packet.message[i]) {
+			puts("not same content");
+			goto next;
+		}
+	}
 
 	double		time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
 
