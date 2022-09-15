@@ -57,14 +57,6 @@ int				sock;
 	ptr; \
 })
 
-#define Error(fmt, ...) { \
-	if (!quiet) \
-		printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
-	++packets_error; \
-	alarm(interval); \
-	return ; \
-}
-
 // https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
 
 int		show_help(void)
@@ -77,12 +69,6 @@ int		show_help(void)
 	fprintf(stderr, "    -t TTL         Set TTL\n");
 	fprintf(stderr, "    -q             Quiet, only display output at start/finish\n");
 	fprintf(stderr, "    -v             Verbose output\n");
-
-			// t =y
-			// s =y
-			// c =y
-			// q =y
-			// i =y
 	return (64);
 }
 
@@ -111,6 +97,22 @@ void	statistics(void)
 
 	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n", round_trip_min, round_trip_avg, round_trip_max, round_trip_stddev);
 	exit(0);
+}
+
+void	next() {
+	if (count == packets_count) {
+		statistics();
+		exit(1);
+	}
+	alarm(interval);
+}
+
+#define Error(fmt, ...) { \
+	if (!quiet) \
+		printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
+	++packets_error; \
+	next(); \
+	return ; \
 }
 
 // https://www.rfc-editor.org/rfc/rfc6450.html#section-3
@@ -300,11 +302,7 @@ void	ping(void)
 	if (!quiet)
 		printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
 
-	if (count == packets_received) {
-		statistics();
-		exit(1);
-	}
-	alarm(interval);
+	next();
 }
 
 int	is_digit(int c) {
