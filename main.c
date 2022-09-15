@@ -29,6 +29,7 @@ char			ip[INET6_ADDRSTRLEN];
 
 int				packets_count = 0;
 int				packets_received = 0;
+int				packets_error = 0;
 
 typedef struct times_s {
 	double				ms;
@@ -39,7 +40,7 @@ double			round_trip_avg = 0;
 double			round_trip_max = 0;
 times_t			*times = NULL;
 
-int				ttl = 37;
+int				ttl = 1;
 
 int				sock;
 
@@ -51,6 +52,13 @@ int				sock;
 	} \
 	ptr; \
 })
+
+#define Error(fmt, ...) { \
+	printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
+	++packets_error; \
+	alarm(1); \
+	return ; \
+}
 
 // https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
 
@@ -126,6 +134,68 @@ typedef struct {
 	char		message[PACKET_SZ - sizeof(icmphdr_t)];
 }	ping_packer_t;
 
+void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
+	switch (received_packet->icmphdr.type)
+	{
+		case ICMP_DEST_UNREACH:
+			switch (received_packet->icmphdr.code) {
+				case ICMP_NET_UNREACH: Error("Net Unreachable"); break ;
+				case ICMP_HOST_UNREACH: Error("Host Unreachable"); break ;
+				case ICMP_PROT_UNREACH: Error("Protocol Unreachable"); break ;
+				case ICMP_PORT_UNREACH: Error("Port Unreachable"); break ;
+				case ICMP_FRAG_NEEDED: Error("Fragmentation Needed and Don't Fragment was Set"); break ;
+				case ICMP_SR_FAILED: Error("Source Route Failed"); break ;
+				case ICMP_NET_UNKNOWN: Error("Destination Network Unknown"); break ;
+				case ICMP_HOST_UNKNOWN: Error("Destination Host Unknown"); break ;
+				case ICMP_HOST_ISOLATED: Error("Source Host Isolated"); break ;
+				case ICMP_NET_ANO: Error("Communication with Destination Network is Administratively Prohibited"); break ;
+				case ICMP_HOST_ANO: Error("Communication with Destination Host is Administratively Prohibited"); break ;
+				case ICMP_NET_UNR_TOS: Error("Destination Network Unreachable for Type of Service"); break ;
+				case ICMP_HOST_UNR_TOS: Error("Destination Host Unreachable for Type of Service"); break ;
+				case ICMP_PKT_FILTERED: Error("Communication Administratively Prohibited"); break ;
+				case ICMP_PREC_VIOLATION: Error("Host Precedence Violation"); break ;
+				case ICMP_PREC_CUTOFF: Error("Precedence cutoff in effect"); break ;
+				default: Error("Destination unreachable"); break ;
+			}
+		break ;
+
+		case ICMP_SOURCE_QUENCH:
+			Error("Source Quench");
+		break ;
+
+		case ICMP_REDIRECT:
+			switch (received_packet->icmphdr.code) {
+				case ICMP_REDIR_NET: Error("Redirect for Destination Network"); break ;
+				case ICMP_REDIR_HOST: Error("Redirect for Destination Host"); break ;
+				case ICMP_REDIR_NETTOS: Error("Redirect for Destination Network Based on Type-of-Service"); break ;
+				case ICMP_REDIR_HOSTTOS: Error("Redirect for Destination Host Based on Type-of-Service"); break ;
+				default: Error("Redirect"); break ;
+			}
+		break ;
+
+		case ICMP_TIME_EXCEEDED:
+			switch (received_packet->icmphdr.code) {
+				case ICMP_EXC_TTL: Error("Time-to-Live Exceeded in Transit"); break ;
+				case ICMP_EXC_FRAGTIME: Error("Fragment Reassembly Time Exceeded"); break ;
+				default: Error("Time Exceeded"); break ;
+			}
+		break ;
+
+		case ICMP_PARAMETERPROB:
+			switch (received_packet->icmphdr.code) {
+				case ICMP_ERRATPTR: Error("Pointer indicates the error"); break ;
+				case ICMP_OPTABSENT: Error("Missing a Required Option"); break ;
+				case ICMP_BAD_LENGTH: Error("Bad Length"); break ;
+				default: Error("Parameter Problem"); break ;
+			}
+		break ;
+
+		default:
+			Error("Unknown (type=%d)", received_packet->icmphdr.type);
+		break ;
+	}
+}
+
 void	ping(void)
 {
 	uint16_t	icmp_seq = packets_count;
@@ -156,44 +226,42 @@ void	ping(void)
 	}
 
 	if (len == -1) {
-		perror("ping: recv");
-		goto next;
+		Error("%s", strerror(errno));
 	}
 
-	printf("%ld %ld\n", len, (sizeof(struct ip) + PACKET_SZ));
 	if (len < (ssize_t)(sizeof(struct ip) + PACKET_SZ)) {
-		puts("received not everything");
-		goto next;
+		Error("Missing data");
 	}
 
 	ping_packer_t	*received_packet = (ping_packer_t *)(iovbuf + sizeof(struct ip));
 
 	uint16_t	received_checksum = received_packet->icmphdr.checksum;
 	received_packet->icmphdr.checksum = 0;
+
 	if (received_checksum != checksum(received_packet, sizeof(ping_packet))) {
-		puts("invalid checksum");
-		goto next;
+		Error("Invalid checksum");
 	}
 
 	if (received_packet->icmphdr.type != ICMP_ECHOREPLY) {
-		puts("not a reply");
-		goto next;
+		ErrorIcmpType(received_packet, icmp_seq);
+		return ;
+	}
+
+	if (received_packet->icmphdr.code != 0) {
+		Error("Invalid code (code=%d)", received_packet->icmphdr.code);
 	}
 
 	if (received_packet->icmphdr.un.echo.sequence != ping_packet.icmphdr.un.echo.sequence) {
-		puts("wrong sequence id");
-		goto next;
+		Error("Wrong sequence id");
 	}
 
 	if (received_packet->icmphdr.un.echo.id != ping_packet.icmphdr.un.echo.id) {
-		puts("wrong id");
-		goto next;
+		Error("Wrong id");
 	}
 
 	for (size_t i = 0; i < sizeof(received_packet->message); ++i) {
 		if (received_packet->message[i] != ping_packet.message[i]) {
-			puts("not same content");
-			goto next;
+			Error("Not same content");
 		}
 	}
 
@@ -212,7 +280,6 @@ void	ping(void)
 
 	printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
 
-next:
 	alarm(1);
 }
 

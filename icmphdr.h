@@ -2,10 +2,9 @@
 
 #include <stdint.h>
 
-// http://www.rajivchakravorty.com/source-code/.tmp/snort-html/structicmphdr.html
-// http://www.rajivchakravorty.com/source-code/.tmp/snort-html/struct__ICMPHdr.html
-// https://pcapplusplus.github.io/api-docs/v22.05/structpcpp_1_1icmphdr.html
 // https://sites.uclouvain.be/SystInfo/usr/include/netinet/ip_icmp.h.html
+// https://github.com/leostratus/netinet/blob/master/ip_icmp.h
+// https://www.computernetworkingnotes.com/networking-tutorials/icmp-error-messages-and-format-explained.html
 typedef struct
 { 
 	uint8_t type;
@@ -69,3 +68,8 @@ typedef struct
 /* Codes for TIME_EXCEEDED. */
 #define ICMP_EXC_TTL             0        /* TTL count exceeded                */
 #define ICMP_EXC_FRAGTIME        1        /* Fragment Reass time exceeded        */
+
+/* Codes for PARAMETERPROB */
+#define ICMP_ERRATPTR            0
+#define ICMP_OPTABSENT           1
+#define ICMP_BAD_LENGTH          2
