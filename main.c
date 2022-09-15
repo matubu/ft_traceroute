@@ -289,6 +289,13 @@ int		main(int ac, const char **av)
 	{
 		if (*av[ac] == '-')
 		{
+			// t
+			// a
+			// s
+			// S
+			// c
+			// d
+			// W
 			if (av[ac][1] == 'v' && av[ac][2] == '\0')
 				verbose = 1;
 			else
