@@ -113,7 +113,7 @@ void	next() {
 }
 
 #define Error(fmt, ...) { \
-	if (!g.quiet) \
+	if (!g.quiet && g.verbose) \
 		printf("From %s: icmp_seq=%d " fmt "\n", g.ip, icmp_seq, ##__VA_ARGS__); \
 	next(); \
 	return ; \
@@ -326,8 +326,7 @@ uint64_t	parse_u64(const char *s) {
 	return (n);
 }
 
-int		main(int ac, const char **av)
-{
+void	parse_arguments(int ac, const char **av) {
 	for (int i = 1; i < ac; ++i) {
 		if (*av[i] == '-') {
 			if (av[i][1] == '\0' || av[i][2] != '\0')
@@ -368,6 +367,11 @@ int		main(int ac, const char **av)
 
 	if (!g.host)
 		exit(show_help());
+}
+
+int		main(int ac, const char **av)
+{
+	parse_arguments(ac, av);
 
 	struct addrinfo hints = {0};
 	hints.ai_family = AF_INET;
@@ -402,9 +406,9 @@ int		main(int ac, const char **av)
 	printf("PING %s (%s): %ld data bytes\n", g.host, g.ip, g.data_size);
 
 	signal(SIGALRM, (void (*)())ping);
-	ping();
-
 	signal(SIGINT, (void (*)())statistics);
+
+	ping();
 
 	while (1);
 }
