@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <netdb.h>
@@ -12,52 +11,58 @@
 #include <float.h>
 #include <math.h>
 
+#include "malloc.h"
 #include "icmphdr.h"
 
-#define BUF_SIZE 1024
+#define RECV_BUFSIZE 1024
 
-// htons could be used too
 #define SWAP_ENDIANESS_16(n) ((n & 0xff) << 8 | (n >> 8))
 
-// TODO only one global variable
-int				verbose = 0;
-int				help = 0;
-uint8_t			ttl = 37;
-uint64_t		packet_size = 56;
-uint64_t		data_size = 0;
-int				count = -1;
-int				quiet = 0;
-uint64_t		interval = 1;
-
-char			*host = NULL;
-struct addrinfo	*addr;
-char			ip[INET6_ADDRSTRLEN];
-
-int				packets_count = 0;
-int				packets_received = 0;
-int				packets_error = 0;
-
-typedef struct times_s {
+typedef struct trips_s {
 	double				ms;
-	struct times_s	*next;
-}	times_t;
-double			round_trip_min = DBL_MAX;
-double			round_trip_avg = 0;
-double			round_trip_max = 0;
-times_t			*times = NULL;
+	struct trips_s	*next;
+}	trips_t;
 
-int				sock;
+typedef struct {
+	int				verbose;
+	uint64_t		ttl;
+	uint64_t		packet_size;
+	int				count;
+	int				quiet;
+	uint64_t		interval;
 
-#define malloc(n) ({ \
-	void	*ptr = malloc(n); \
-	if (ptr == NULL) { \
-		fprintf(stderr, "ping: allocation failed\n"); \
-		exit(1); \
-	} \
-	ptr; \
-})
+	char			*host;
 
-// https://www.gnu.org/software/gnu-c-manual/gnu-c-manual.html#Initializing-Structure-Members
+	int				packets_count;
+	int				packets_received;
+	double			round_trip_min;
+	double			round_trip_max;
+	double			round_trip_total;
+	trips_t			*trips;
+
+	int				sock;
+	struct addrinfo	*addr;
+	char			ip[INET6_ADDRSTRLEN];
+	uint64_t		data_size;
+}	t_state;
+
+t_state	g = {
+	.verbose = 0,
+	.ttl = 37,
+	.packet_size = 56,
+	.count = -1,
+	.quiet = 0,
+	.interval = 1,
+
+	.host = NULL,
+
+	.packets_count = 0,
+	.packets_received = 0,
+	.round_trip_min = DBL_MAX,
+	.round_trip_max = 0,
+	.round_trip_total = 0,
+	.trips = NULL,
+};
 
 int		show_help(void)
 {
@@ -75,42 +80,41 @@ int		show_help(void)
 void	statistics(void)
 {
 	printf("\n");
-	printf("--- %s ft_ping statistics ---\n", host);
+	printf("--- %s ft_ping statistics ---\n", g.host);
 	printf("%d packets transmitted, %d packets received, %.1f%% packet loss\n",
-		packets_count,
-		packets_received,
-		(1 - (float)packets_received / packets_count) * 100
+		g.packets_count,
+		g.packets_received,
+		(1 - (float)g.packets_received / g.packets_count) * 100
 	);
 
-	if (packets_received == 0) {
+	if (g.packets_received == 0) {
 		exit(1);
 	}
 
-	round_trip_avg /= packets_received;
+	double	round_trip_avg = g.round_trip_total / g.packets_received;
 
-	double			round_trip_stddev = 0;
-	for (times_t *it = times; it != NULL; it = it->next) {
+	double	round_trip_stddev = 0;
+	for (trips_t *it = g.trips; it != NULL; it = it->next) {
 		double	deviation = it->ms - round_trip_avg;
 		round_trip_stddev += deviation * deviation;
 	}
-	round_trip_stddev = sqrt(round_trip_stddev / packets_received);
+	round_trip_stddev = sqrt(round_trip_stddev / g.packets_received);
 
-	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n", round_trip_min, round_trip_avg, round_trip_max, round_trip_stddev);
+	printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n", g.round_trip_min, round_trip_avg, g.round_trip_max, round_trip_stddev);
 	exit(0);
 }
 
 void	next() {
-	if (count == packets_count) {
+	if (g.count == g.packets_count) {
 		statistics();
 		exit(1);
 	}
-	alarm(interval);
+	alarm(g.interval);
 }
 
 #define Error(fmt, ...) { \
-	if (!quiet) \
-		printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
-	++packets_error; \
+	if (!g.quiet) \
+		printf("From %s: icmp_seq=%d " fmt "\n", g.ip, icmp_seq, ##__VA_ARGS__); \
 	next(); \
 	return ; \
 }
@@ -118,7 +122,7 @@ void	next() {
 // https://www.rfc-editor.org/rfc/rfc6450.html#section-3
 // https://fr.wikipedia.org/wiki/Internet_Control_Message_Protocol
 // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
-// Data is send in network byte order (big endian)
+// note: Data is send in network byte order (big endian)
 
 uint16_t	checksum(void *data_ptr, size_t data_size) {
 	uint16_t	*data = data_ptr;
@@ -146,11 +150,11 @@ void	craft_ping_packet(icmphdr_t *buf, uint16_t icmp_seq)
 	buf->un.echo.id = SWAP_ENDIANESS_16(getpid());
 	buf->un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq);
 
-	for (uint64_t i = 0; i < packet_size; ++i) {
+	for (uint64_t i = 0; i < g.packet_size; ++i) {
 		((char *)buf)[sizeof(icmphdr_t) + i] = i % 3 + 1;
 	}
 
-	buf->checksum = checksum(buf, data_size);
+	buf->checksum = checksum(buf, g.data_size);
 }
 
 void	ErrorIcmpType(icmphdr_t	*received_packet, uint16_t icmp_seq) {
@@ -217,12 +221,12 @@ void	ErrorIcmpType(icmphdr_t	*received_packet, uint16_t icmp_seq) {
 
 void	ping(void)
 {
-	uint16_t	icmp_seq = packets_count;
+	uint16_t	icmp_seq = g.packets_count;
 
-	char			buf[data_size];
+	char			buf[g.data_size];
 	craft_ping_packet((icmphdr_t *)buf, icmp_seq);
 
-	char			iovbuf[BUF_SIZE];
+	char			iovbuf[RECV_BUFSIZE];
 	struct iovec	iov = { iovbuf, sizeof(iovbuf) };
 	struct msghdr	msg = {0};
 	msg.msg_iov = &iov;
@@ -234,9 +238,9 @@ void	ping(void)
 		exit(1);
 	}
 
-	sendto(sock, buf, data_size, 0, addr->ai_addr, addr->ai_addrlen);
-	++packets_count;
-	ssize_t	len = recvmsg(sock, &msg, 0);
+	sendto(g.sock, buf, g.data_size, 0, g.addr->ai_addr, g.addr->ai_addrlen);
+	++g.packets_count;
+	ssize_t	len = recvmsg(g.sock, &msg, 0);
 	if (gettimeofday(&end, NULL) < 0) {
 		perror("ping: gettimeofday");
 		exit(1);
@@ -276,11 +280,11 @@ void	ping(void)
 		Error("Wrong id");
 	}
 
-	if (len < (ssize_t)(sizeof(struct ip) + data_size)) {
+	if (len < (ssize_t)(sizeof(struct ip) + g.data_size)) {
 		Error("Missing content");
 	}
 
-	for (size_t i = 0; i < packet_size; ++i) {
+	for (size_t i = 0; i < g.packet_size; ++i) {
 		if (((char *)received_packet + sizeof(icmphdr_t))[i] != i[buf + sizeof(icmphdr_t)]) {
 			Error("Not same content");
 		}
@@ -288,19 +292,19 @@ void	ping(void)
 
 	double		time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
 
-	round_trip_min = round_trip_min < time ? round_trip_min : time;
-	round_trip_avg += time;
-	round_trip_max = round_trip_max > time ? round_trip_max : time;
+	g.round_trip_min = g.round_trip_min < time ? g.round_trip_min : time;
+	g.round_trip_max = g.round_trip_max > time ? g.round_trip_max : time;
+	g.round_trip_total += time;
 
-	times_t	*node = malloc(sizeof(times_t));
+	trips_t	*node = malloc(sizeof(trips_t));
 	node->ms = time;
-	node->next = times;
-	times = node;
+	node->next = g.trips;
+	g.trips = node;
 
-	++packets_received;
+	++g.packets_received;
 
-	if (!quiet)
-		printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
+	if (!g.quiet)
+		printf("%zd bytes from %s: icmp_seq=%d ttl=%ld time=%.3f ms\n", len, g.ip, icmp_seq, g.ttl, time);
 
 	next();
 }
@@ -326,86 +330,76 @@ int		main(int ac, const char **av)
 {
 	for (int i = 1; i < ac; ++i) {
 		if (*av[i] == '-') {
-			if (av[i][1] == '\0' || av[i][2] != '\0') {
-				help = 1;
-				break ;
-			}
+			if (av[i][1] == '\0' || av[i][2] != '\0')
+				exit(show_help());
 			switch (av[i][1]) {
-				case 'v': verbose = 1; break ;
-				case 'q': quiet = 1; break ;
+				case 'v': g.verbose = 1; break ;
+				case 'q': g.quiet = 1; break ;
 				case 't':
-					if (++i < ac) {
-						ttl = parse_u64(av[i]);
-					} else {
-						help = 1;
-					}
+					if (++i >= ac)
+						exit(show_help());
+					g.ttl = parse_u64(av[i]);
 				break ;
 				case 's':
-					if (++i < ac) {
-						packet_size = parse_u64(av[i]);
-					} else {
-						help = 1;
-					}
+					if (++i >= ac)
+						exit(show_help());
+					g.packet_size = parse_u64(av[i]);
 				break ;
 				case 'c':
-					if (++i < ac) {
-						count = parse_u64(av[i]);
-					} else {
-						help = 1;
-					}
+					if (++i >= ac)
+						exit(show_help());
+					g.count = parse_u64(av[i]);
 				break ;
 				case 'i':
-					if (++i < ac) {
-						interval = parse_u64(av[i]);
-					} else {
-						help = 1;
-					}
+					if (++i >= ac)
+						exit(show_help());
+					g.interval = parse_u64(av[i]);
 				break ;
 				default:
-					help = 1;
+					exit(show_help());
 				break ;
 			}
 		}
-		else if (host)
-			help = 1;
+		else if (g.host)
+			exit(show_help());
 		else
-			host = (char *)av[i];
+			g.host = (char *)av[i];
 	}
 
-	if (!host || help)
-		return (show_help());
+	if (!g.host)
+		exit(show_help());
 
 	struct addrinfo hints = {0};
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_RAW;
 	hints.ai_protocol = IPPROTO_ICMP;
 
-	if (getaddrinfo(host, NULL, &hints, &addr) < 0) {
-		fprintf(stderr, "ping: cannot resolve %s: Unknown host\n", host);
+	if (getaddrinfo(g.host, NULL, &hints, &g.addr) < 0) {
+		fprintf(stderr, "ping: cannot resolve %s: Unknown host\n", g.host);
 		exit(1);
 	}
 
-	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
-	if (sock < 0) {
+	g.sock = socket(g.addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
+	if (g.sock < 0) {
 		perror("ping: socket");
 		exit(1);
 	}
 
-	if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+	if (setsockopt(g.sock, IPPROTO_IP, IP_TTL, &g.ttl, sizeof(g.ttl)) < 0) {
 		perror("ping: setsockopt IP_TTL");
 		exit(1);
 	}
 
 	struct timeval timeout = {1, 0};
-	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+	if (setsockopt(g.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
 		perror("ping: setsockopt SO_RCVTIMEO");
 		exit(1);
 	}
 
-	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, ip, INET6_ADDRSTRLEN);
+	inet_ntop(g.addr->ai_family, &((struct sockaddr_in *)g.addr->ai_addr)->sin_addr, g.ip, INET6_ADDRSTRLEN);
 
-	data_size = packet_size + sizeof(icmphdr_t);
-	printf("PING %s (%s): %ld data bytes\n", host, ip, data_size);
+	g.data_size = g.packet_size + sizeof(icmphdr_t);
+	printf("PING %s (%s): %ld data bytes\n", g.host, g.ip, g.data_size);
 
 	signal(SIGALRM, (void (*)())ping);
 	ping();
