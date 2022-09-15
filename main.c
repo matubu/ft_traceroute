@@ -15,7 +15,6 @@
 #include "icmphdr.h"
 
 #define BUF_SIZE 1024
-#define PACKET_SZ 64
 
 // htons could be used too
 #define SWAP_ENDIANESS_16(n) ((n & 0xff) << 8 | (n >> 8))
@@ -23,6 +22,13 @@
 // TODO only one global variable
 int				verbose = 0;
 int				help = 0;
+uint8_t			ttl = 37;
+uint64_t		packet_size = 56;
+uint64_t		data_size = 0;
+int				count = -1;
+int				quiet = 0;
+uint64_t		interval = 1;
+
 char			*host = NULL;
 struct addrinfo	*addr;
 char			ip[INET6_ADDRSTRLEN];
@@ -40,8 +46,6 @@ double			round_trip_avg = 0;
 double			round_trip_max = 0;
 times_t			*times = NULL;
 
-int				ttl = 1;
-
 int				sock;
 
 #define malloc(n) ({ \
@@ -54,9 +58,10 @@ int				sock;
 })
 
 #define Error(fmt, ...) { \
-	printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
+	if (!quiet) \
+		printf("From %s: icmp_seq=%d " fmt "\n", ip, icmp_seq, ##__VA_ARGS__); \
 	++packets_error; \
-	alarm(1); \
+	alarm(interval); \
 	return ; \
 }
 
@@ -64,7 +69,20 @@ int				sock;
 
 int		show_help(void)
 {
-	fprintf(stderr, "usage: ft_ping [-v]\n");
+	fprintf(stderr, "Usage: ft_ping [OPTIONS] HOST\n");
+	fprintf(stderr, "\n");
+	fprintf(stderr, "    -c CNT         Send only CNT pings\n");
+	fprintf(stderr, "    -s SIZE        Send SIZE data bytes in packets (default 56)\n");
+	fprintf(stderr, "    -i SECS        Interval\n");
+	fprintf(stderr, "    -t TTL         Set TTL\n");
+	fprintf(stderr, "    -q             Quiet, only display output at start/finish\n");
+	fprintf(stderr, "    -v             Verbose output\n");
+
+			// t =y
+			// s =y
+			// c =y
+			// q =y
+			// i =y
 	return (64);
 }
 
@@ -118,27 +136,26 @@ uint16_t	checksum(void *data_ptr, size_t data_size) {
 	return (~sum);
 }
 
-icmphdr_t	craft_ping_packet(uint16_t icmp_seq)
+void	craft_ping_packet(icmphdr_t *buf, uint16_t icmp_seq)
 {
-	icmphdr_t	icmphdr = {0};
-	icmphdr.type = ICMP_ECHO;
-	icmphdr.code = 0;
-	icmphdr.un.echo.id = SWAP_ENDIANESS_16(getpid());
-	icmphdr.un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq);
+	buf->type = ICMP_ECHO;
+	buf->code = 0;
+	buf->checksum = 0;
+	buf->un.echo.id = SWAP_ENDIANESS_16(getpid());
+	buf->un.echo.sequence = SWAP_ENDIANESS_16(icmp_seq);
 
-	return (icmphdr);
+	for (uint64_t i = 0; i < packet_size; ++i) {
+		((char *)buf)[sizeof(icmphdr_t) + i] = i % 3 + 1;
+	}
+
+	buf->checksum = checksum(buf, data_size);
 }
 
-typedef struct {
-	icmphdr_t	icmphdr;
-	char		message[PACKET_SZ - sizeof(icmphdr_t)];
-}	ping_packer_t;
-
-void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
-	switch (received_packet->icmphdr.type)
+void	ErrorIcmpType(icmphdr_t	*received_packet, uint16_t icmp_seq) {
+	switch (received_packet->type)
 	{
 		case ICMP_DEST_UNREACH:
-			switch (received_packet->icmphdr.code) {
+			switch (received_packet->code) {
 				case ICMP_NET_UNREACH: Error("Net Unreachable"); break ;
 				case ICMP_HOST_UNREACH: Error("Host Unreachable"); break ;
 				case ICMP_PROT_UNREACH: Error("Protocol Unreachable"); break ;
@@ -164,7 +181,7 @@ void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
 		break ;
 
 		case ICMP_REDIRECT:
-			switch (received_packet->icmphdr.code) {
+			switch (received_packet->code) {
 				case ICMP_REDIR_NET: Error("Redirect for Destination Network"); break ;
 				case ICMP_REDIR_HOST: Error("Redirect for Destination Host"); break ;
 				case ICMP_REDIR_NETTOS: Error("Redirect for Destination Network Based on Type-of-Service"); break ;
@@ -174,7 +191,7 @@ void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
 		break ;
 
 		case ICMP_TIME_EXCEEDED:
-			switch (received_packet->icmphdr.code) {
+			switch (received_packet->code) {
 				case ICMP_EXC_TTL: Error("Time-to-Live Exceeded in Transit"); break ;
 				case ICMP_EXC_FRAGTIME: Error("Fragment Reassembly Time Exceeded"); break ;
 				default: Error("Time Exceeded"); break ;
@@ -182,7 +199,7 @@ void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
 		break ;
 
 		case ICMP_PARAMETERPROB:
-			switch (received_packet->icmphdr.code) {
+			switch (received_packet->code) {
 				case ICMP_ERRATPTR: Error("Pointer indicates the error"); break ;
 				case ICMP_OPTABSENT: Error("Missing a Required Option"); break ;
 				case ICMP_BAD_LENGTH: Error("Bad Length"); break ;
@@ -191,7 +208,7 @@ void	ErrorIcmpType(ping_packer_t	*received_packet, uint16_t icmp_seq) {
 		break ;
 
 		default:
-			Error("Unknown (type=%d)", received_packet->icmphdr.type);
+			Error("Unknown (type=%d)", received_packet->type);
 		break ;
 	}
 }
@@ -200,11 +217,8 @@ void	ping(void)
 {
 	uint16_t	icmp_seq = packets_count;
 
-	ping_packer_t	ping_packet = {
-		craft_ping_packet(icmp_seq),
-		"hello world"
-	};
-	ping_packet.icmphdr.checksum = checksum(&ping_packet, sizeof(ping_packet));
+	char			buf[data_size];
+	craft_ping_packet((icmphdr_t *)buf, icmp_seq);
 
 	char			iovbuf[BUF_SIZE];
 	struct iovec	iov = { iovbuf, sizeof(iovbuf) };
@@ -217,7 +231,8 @@ void	ping(void)
 		perror("ping: gettimeofday");
 		exit(1);
 	}
-	sendto(sock, (char *)&ping_packet, sizeof(ping_packet), 0, addr->ai_addr, addr->ai_addrlen);
+
+	sendto(sock, buf, data_size, 0, addr->ai_addr, addr->ai_addrlen);
 	++packets_count;
 	ssize_t	len = recvmsg(sock, &msg, 0);
 	if (gettimeofday(&end, NULL) < 0) {
@@ -229,38 +244,42 @@ void	ping(void)
 		Error("%s", strerror(errno));
 	}
 
-	if (len < (ssize_t)(sizeof(struct ip) + PACKET_SZ)) {
-		Error("Missing data");
+	if (len < (ssize_t)(sizeof(struct ip) + sizeof(icmphdr_t))) {
+		Error("Missing header");
 	}
 
-	ping_packer_t	*received_packet = (ping_packer_t *)(iovbuf + sizeof(struct ip));
+	icmphdr_t	*received_packet = (icmphdr_t *)(iovbuf + sizeof(struct ip));
 
-	uint16_t	received_checksum = received_packet->icmphdr.checksum;
-	received_packet->icmphdr.checksum = 0;
+	uint16_t	received_checksum = received_packet->checksum;
+	received_packet->checksum = 0;
 
-	if (received_checksum != checksum(received_packet, sizeof(ping_packet))) {
+	if (received_checksum != checksum(received_packet, len - sizeof(struct ip))) {
 		Error("Invalid checksum");
 	}
 
-	if (received_packet->icmphdr.type != ICMP_ECHOREPLY) {
+	if (received_packet->type != ICMP_ECHOREPLY) {
 		ErrorIcmpType(received_packet, icmp_seq);
 		return ;
 	}
 
-	if (received_packet->icmphdr.code != 0) {
-		Error("Invalid code (code=%d)", received_packet->icmphdr.code);
+	if (received_packet->code != 0) {
+		Error("Invalid code (code=%d)", received_packet->code);
 	}
 
-	if (received_packet->icmphdr.un.echo.sequence != ping_packet.icmphdr.un.echo.sequence) {
+	if (received_packet->un.echo.sequence != ((icmphdr_t *)buf)->un.echo.sequence) {
 		Error("Wrong sequence id");
 	}
 
-	if (received_packet->icmphdr.un.echo.id != ping_packet.icmphdr.un.echo.id) {
+	if (received_packet->un.echo.id != ((icmphdr_t *)buf)->un.echo.id) {
 		Error("Wrong id");
 	}
 
-	for (size_t i = 0; i < sizeof(received_packet->message); ++i) {
-		if (received_packet->message[i] != ping_packet.message[i]) {
+	if (len < (ssize_t)(sizeof(struct ip) + data_size)) {
+		Error("Missing content");
+	}
+
+	for (size_t i = 0; i < packet_size; ++i) {
+		if (((char *)received_packet + sizeof(icmphdr_t))[i] != i[buf + sizeof(icmphdr_t)]) {
 			Error("Not same content");
 		}
 	}
@@ -278,33 +297,81 @@ void	ping(void)
 
 	++packets_received;
 
-	printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
+	if (!quiet)
+		printf("%zd bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n", len, ip, icmp_seq, ttl, time);
 
-	alarm(1);
+	if (count == packets_received) {
+		statistics();
+		exit(1);
+	}
+	alarm(interval);
+}
+
+int	is_digit(int c) {
+	return (c >= '0' && c <= '9');
+}
+
+uint64_t	parse_u64(const char *s) {
+	if (!is_digit(*s)) {
+		fprintf(stderr, "ping: expected u8\n");
+		exit(1);
+	}
+	uint64_t	n = 0;
+	while (is_digit(*s)) {
+		n = n * 10 + *s - '0';
+		++s;
+	}
+	return (n);
 }
 
 int		main(int ac, const char **av)
 {
-	while (--ac)
-	{
-		if (*av[ac] == '-')
-		{
-			// t
-			// a
-			// s
-			// S
-			// c
-			// d
-			// W
-			if (av[ac][1] == 'v' && av[ac][2] == '\0')
-				verbose = 1;
-			else
+	for (int i = 1; i < ac; ++i) {
+		if (*av[i] == '-') {
+			if (av[i][1] == '\0' || av[i][2] != '\0') {
 				help = 1;
+				break ;
+			}
+			switch (av[i][1]) {
+				case 'v': verbose = 1; break ;
+				case 'q': quiet = 1; break ;
+				case 't':
+					if (++i < ac) {
+						ttl = parse_u64(av[i]);
+					} else {
+						help = 1;
+					}
+				break ;
+				case 's':
+					if (++i < ac) {
+						packet_size = parse_u64(av[i]);
+					} else {
+						help = 1;
+					}
+				break ;
+				case 'c':
+					if (++i < ac) {
+						count = parse_u64(av[i]);
+					} else {
+						help = 1;
+					}
+				break ;
+				case 'i':
+					if (++i < ac) {
+						interval = parse_u64(av[i]);
+					} else {
+						help = 1;
+					}
+				break ;
+				default:
+					help = 1;
+				break ;
+			}
 		}
 		else if (host)
 			help = 1;
 		else
-			host = (char *)av[ac];
+			host = (char *)av[i];
 	}
 
 	if (!host || help)
@@ -338,7 +405,9 @@ int		main(int ac, const char **av)
 	}
 
 	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, ip, INET6_ADDRSTRLEN);
-	printf("PING %s (%s): %d data bytes\n", host, ip, PACKET_SZ);
+
+	data_size = packet_size + sizeof(icmphdr_t);
+	printf("PING %s (%s): %ld data bytes\n", host, ip, data_size);
 
 	signal(SIGALRM, (void (*)())ping);
 	ping();
