@@ -1,4 +1,4 @@
-NAME = ft_ping
+NAME = ft_traceroute
 
 SRCS = main.c
 OBJS = $(SRCS:.c=.o)
@@ -22,8 +22,4 @@ fclean: clean
 re: fclean all
 
 run: all
-	sudo ./$(NAME) google.com
-
-docker:
-	docker compose build
-	docker compose run ft_ping sh
+	sudo ./$(NAME) mathias.ninja
