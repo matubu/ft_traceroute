@@ -71,58 +71,72 @@ int		main(int ac, const char **av)
 	hints.ai_protocol = IPPROTO_ICMP;
 
 	if (getaddrinfo(host, NULL, &hints, &addr) < 0) {
-		fprintf(stderr, "ping: cannot resolve %s: Unknown host\n", host);
+		fprintf(stderr, "traceroute: cannot resolve %s: Unknown host\n", host);
 		exit(1);
 	}
 
 	int	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
 	if (sock < 0) {
-		perror("ping: could not create socket");
+		perror("traceroute: could not create socket");
 		exit(1);
 	}
 
 	struct timeval timeout = {1, 0};
 	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-		perror("ping: setsockopt SO_RCVTIMEO");
+		perror("traceroute: setsockopt SO_RCVTIMEO");
 		exit(1);
 	}
 
-	uint64_t	i = 1;
-	while (1) {
+	uint64_t	i = 0;
+	uint64_t	max_hops = 30;
+
+	while (++i < max_hops) {
 		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &i, sizeof(i)) < 0) {
-			perror("ping: setsockopt IP_TTL");
+			perror("traceroute: setsockopt IP_TTL");
 			exit(1);
 		}
 
 		char	buf[PCK_SIZE];
 		craft_traceroute_packet((icmphdr_t *)buf);
 
-		sendto(sock, buf, PCK_SIZE, 0, addr->ai_addr, addr->ai_addrlen);
+		struct timeval	start, end;
+		if (gettimeofday(&start, NULL) < 0) {
+			perror("ping: gettimeofday");
+			exit(1);
+		}
+
+		if (sendto(sock, buf, PCK_SIZE, 0, addr->ai_addr, addr->ai_addrlen) < 0) {
+			perror("traceroute: sendto");
+			exit(1);
+		}
 
 		char				recvbuf[RECV_BUFSIZE];
 		struct sockaddr_in	r_addr;
 		uint				addr_len = sizeof(r_addr);
 
-		recvfrom(sock, &recvbuf, RECV_BUFSIZE, 0,
-			(struct sockaddr*)&r_addr, &addr_len);
+		if (recvfrom(sock, &recvbuf, RECV_BUFSIZE, 0,
+			(struct sockaddr*)&r_addr, &addr_len) < 0) {
+			printf("%2ld  *\n", i);
+			continue ;
+		}
+
+		if (gettimeofday(&end, NULL) < 0) {
+			perror("ping: gettimeofday");
+			exit(1);
+		}
+		double	time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
 
 		char	ipbuf[INET6_ADDRSTRLEN];
 		inet_ntop(r_addr.sin_family, &r_addr.sin_addr, ipbuf, sizeof(ipbuf));
 
-		printf("%ld: %s\n", i, ipbuf);
+		printf("%2ld  %s  %.3f ms\n", i, ipbuf, time);
 
 		icmphdr_t	*icmp_res = (void *)recvbuf + sizeof(struct ip);
 
-		// for (int i = 0; i < 40; ++i) {
-		// 	printf("%02x ", ((uint8_t *)recvbuf)[i]);
-		// }
-
-		printf("type=%d code=%d\n", icmp_res->type, icmp_res->code);
+		// printf("type=%d code=%d\n", icmp_res->type, icmp_res->code);
 
 		if (icmp_res->type != 11) {
 			break ;
 		}
-
-		++i;
 	}
 }
