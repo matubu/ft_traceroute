@@ -138,7 +138,6 @@ int		main(int ac, char **av)
 			}
 			else if (iss(av[i], "-f")) {
 				first_hop = parse_u64(av[++i]);
-				// TODO do weird check
 				if (first_hop == 0) {
 					die("first hop out of range");
 				}
@@ -174,6 +173,9 @@ int		main(int ac, char **av)
 
 	if (host == NULL) {
 		help();
+	}
+	if (first_hop > max_hops) {
+		die("first hop out of range");
 	}
 
 	struct addrinfo	*addr;
