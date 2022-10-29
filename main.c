@@ -16,7 +16,7 @@
 
 // https://hpd.gasmi.net/
 
-#define PCK_SIZE 64
+#define PCK_SIZE 40
 #define PCK_DATA_SIZE (PCK_SIZE - sizeof(icmphdr_t))
 
 #define RECV_BUFSIZE 1024
@@ -74,9 +74,20 @@ int	memdiff(void *a, void *b, size_t len) {
 	return (0);
 }
 
+void	help() {
+	puts("Usage:");
+	puts("  ./traceroute host");
+	puts("Options:");
+	puts("  --help      Read this help and exit");
+	puts("");
+	puts("Arguments:");
+	puts("  host        The host to traceroute to");
+}
+
 int		main(int ac, const char **av)
 {
 	if (ac != 2) {
+		help();
 		exit(1);
 	}
 
@@ -107,6 +118,14 @@ int		main(int ac, const char **av)
 
 	uint64_t	hops = 0;
 	uint64_t	max_hops = 30;
+
+	char	hostip_s[INET6_ADDRSTRLEN];
+	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, hostip_s, INET6_ADDRSTRLEN);
+
+	printf("traceroute to %s (%s), %ld hops max, %ld byte packets\n",
+		host, hostip_s,
+		max_hops, PCK_SIZE + sizeof(struct ip)
+	);
 
 	while (++hops < max_hops) {
 		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops)) < 0) {
