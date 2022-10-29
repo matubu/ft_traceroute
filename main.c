@@ -74,24 +74,108 @@ int	memdiff(void *a, void *b, size_t len) {
 	return (0);
 }
 
+#define iss(s, const_s) !memdiff(const_s, s, sizeof(const_s))
+
 void	help() {
 	puts("Usage:");
 	puts("  ./traceroute host");
 	puts("Options:");
 	puts("  --help      Read this help and exit");
+	puts("  -4          Use IPv4");
+	puts("  -I          Use ICMP ECHO for tracerouting");
+	puts("  -d          Enable socket level debugging");
+	puts("  -f first_ttl");
+	puts("      Start from the first_ttl hop (instead from 1)");
+	puts("  -m max_ttl");
+	puts("      Set the max number of hops (max TTL to be reached). Default is 30");
+	puts("  -q nqueries");
+	puts("      Set the number of probes per each hop. Default is 3");
 	puts("");
 	puts("Arguments:");
 	puts("  host        The host to traceroute to");
+	exit(1);
 }
 
-int		main(int ac, const char **av)
+void	die(char *s) {
+	fprintf(stderr, "traceroute: %s\n", s);
+	exit(1);
+}
+
+int	is_digit(int c) {
+	return (c >= '0' && c <= '9');
+}
+
+uint64_t	parse_u64(const char *s) {
+	if (!s || !is_digit(*s)) {
+		die("expected a unsigned number");
+	}
+	uint64_t	n = 0;
+	while (is_digit(*s)) {
+		n = n * 10 + *s - '0';
+		++s;
+	}
+	return (n);
+}
+
+int		main(int ac, char **av)
 {
-	if (ac != 2) {
+	if (ac < 2) {
 		help();
-		exit(1);
 	}
 
-	const char		*host = av[1];
+	char		*host = NULL;
+	int			debug = 0;
+	uint64_t	first_hop = 1;
+	uint64_t	max_hops = 30;
+	uint64_t	probes_per_hop = 3;
+
+	for (int i = 1; i < ac; ++i) {
+		if (av[i][0] == '-') {
+			if (iss(av[i], "-4") || iss(av[i], "-I")) {
+			}
+			else if (iss(av[i], "-d")) {
+				debug = 1;
+			}
+			else if (iss(av[i], "-f")) {
+				first_hop = parse_u64(av[++i]);
+				// TODO do weird check
+				if (first_hop == 0) {
+					die("first hop out of range");
+				}
+			}
+			else if (iss(av[i], "-q")) {
+				probes_per_hop = parse_u64(av[++i]);
+				if (probes_per_hop <= 0 || probes_per_hop > 10) {
+					die("no more than 10 probes per hop");
+				}
+			}
+			else if (iss(av[i], "-m")) {
+				max_hops = parse_u64(av[++i]);
+				if (max_hops <= 0) {
+					die("first hop out of range");
+				}
+				if (max_hops > 255) {
+					die("max hops cannot be more than 255");
+				}
+			}
+			else if (iss(av[i], "--help")) {
+				help();
+			}
+			else {
+				die("unknown flag");
+			}
+		} else {
+			if (host) {
+				die("host already defined");
+			}
+			host = av[i];
+		}
+	}
+
+	if (host == NULL) {
+		help();
+	}
+
 	struct addrinfo	*addr;
 
 	struct addrinfo hints = {0};
@@ -116,8 +200,14 @@ int		main(int ac, const char **av)
 		exit(1);
 	}
 
-	uint64_t	hops = 0;
-	uint64_t	max_hops = 30;
+	if (debug) {
+		if (setsockopt(sock, SOL_SOCKET, SO_DEBUG, &debug, sizeof(debug)) < 0) {
+			perror("traceroute: setsockopt SO_DEBUG");
+			exit(1);
+		}
+	}
+
+	uint64_t	hops = first_hop;
 
 	char	hostip_s[INET6_ADDRSTRLEN];
 	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, hostip_s, INET6_ADDRSTRLEN);
@@ -127,7 +217,7 @@ int		main(int ac, const char **av)
 		max_hops, PCK_SIZE + sizeof(struct ip)
 	);
 
-	while (++hops < max_hops) {
+	while (hops <= max_hops) {
 		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops)) < 0) {
 			perror("traceroute: setsockopt IP_TTL");
 			exit(1);
@@ -137,7 +227,7 @@ int		main(int ac, const char **av)
 		int	reached = 1;
 		struct sockaddr_in	prev_addr = {};
 
-		for (int i = 0; i < 3; ++i) {
+		for (uint64_t i = 0; i < probes_per_hop; ++i) {
 			char	buf[PCK_SIZE];
 			craft_traceroute_packet((icmphdr_t *)buf);
 
@@ -184,5 +274,7 @@ int		main(int ac, const char **av)
 		if (reached) {
 			break ;
 		}
+
+		++hops;
 	}
 }
