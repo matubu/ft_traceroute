@@ -56,6 +56,24 @@ void	craft_traceroute_packet(icmphdr_t *buf)
 	buf->checksum = checksum(buf, PCK_SIZE);
 }
 
+struct timeval	gettime() {
+	struct timeval	time;
+	if (gettimeofday(&time, NULL) < 0) {
+		perror("ping: gettimeofday");
+		exit(1);
+	}
+	return (time);
+}
+
+int	memdiff(void *a, void *b, size_t len) {
+	for (size_t i = 0; i < len; ++i) {
+		if (((uint8_t *)a)[i] != ((uint8_t *)b)[i]) {
+			return (1);
+		}
+	}
+	return (0);
+}
+
 int		main(int ac, const char **av)
 {
 	if (ac != 2) {
@@ -87,55 +105,64 @@ int		main(int ac, const char **av)
 		exit(1);
 	}
 
-	uint64_t	i = 0;
+	uint64_t	hops = 0;
 	uint64_t	max_hops = 30;
 
-	while (++i < max_hops) {
-		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &i, sizeof(i)) < 0) {
+	while (++hops < max_hops) {
+		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops)) < 0) {
 			perror("traceroute: setsockopt IP_TTL");
 			exit(1);
 		}
 
-		char	buf[PCK_SIZE];
-		craft_traceroute_packet((icmphdr_t *)buf);
+		printf("%2ld", hops);
+		int	reached = 1;
+		struct sockaddr_in	prev_addr = {};
 
-		struct timeval	start, end;
-		if (gettimeofday(&start, NULL) < 0) {
-			perror("ping: gettimeofday");
-			exit(1);
+		for (int i = 0; i < 3; ++i) {
+			char	buf[PCK_SIZE];
+			craft_traceroute_packet((icmphdr_t *)buf);
+
+			struct timeval	start = gettime();
+
+			if (sendto(sock, buf, PCK_SIZE, 0, addr->ai_addr, addr->ai_addrlen) < 0) {
+				perror("traceroute: sendto");
+				exit(1);
+			}
+
+			char				recvbuf[RECV_BUFSIZE];
+			struct sockaddr_in	r_addr;
+			uint				addr_len = sizeof(r_addr);
+
+			if (recvfrom(sock, &recvbuf, RECV_BUFSIZE, 0,
+				(struct sockaddr*)&r_addr, &addr_len) < 0) {
+				printf("  *");
+				reached = 0;
+				continue ;
+			}
+
+			struct timeval end = gettime();
+			double	time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
+
+			char	ipbuf[INET6_ADDRSTRLEN];
+			inet_ntop(r_addr.sin_family, &r_addr.sin_addr, ipbuf, sizeof(ipbuf));
+
+			if (i == 0 || memdiff(&prev_addr, &r_addr, sizeof(r_addr))) {
+				printf("  %s", ipbuf);
+			}
+			printf("  %.3f ms", time);
+
+			prev_addr = r_addr;
+
+			icmphdr_t	*icmp_res = (void *)recvbuf + sizeof(struct ip);
+
+			if (icmp_res->type == 11) {
+				reached = 0;
+			}
 		}
 
-		if (sendto(sock, buf, PCK_SIZE, 0, addr->ai_addr, addr->ai_addrlen) < 0) {
-			perror("traceroute: sendto");
-			exit(1);
-		}
+		printf("\n");
 
-		char				recvbuf[RECV_BUFSIZE];
-		struct sockaddr_in	r_addr;
-		uint				addr_len = sizeof(r_addr);
-
-		if (recvfrom(sock, &recvbuf, RECV_BUFSIZE, 0,
-			(struct sockaddr*)&r_addr, &addr_len) < 0) {
-			printf("%2ld  *\n", i);
-			continue ;
-		}
-
-		if (gettimeofday(&end, NULL) < 0) {
-			perror("ping: gettimeofday");
-			exit(1);
-		}
-		double	time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
-
-		char	ipbuf[INET6_ADDRSTRLEN];
-		inet_ntop(r_addr.sin_family, &r_addr.sin_addr, ipbuf, sizeof(ipbuf));
-
-		printf("%2ld  %s  %.3f ms\n", i, ipbuf, time);
-
-		icmphdr_t	*icmp_res = (void *)recvbuf + sizeof(struct ip);
-
-		// printf("type=%d code=%d\n", icmp_res->type, icmp_res->code);
-
-		if (icmp_res->type != 11) {
+		if (reached) {
 			break ;
 		}
 	}
