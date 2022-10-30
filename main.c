@@ -3,16 +3,14 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <signal.h>
-#include <string.h>
-#include <errno.h>
 #include <stdint.h>
-#include <sys/time.h>
 #include <netinet/ip.h>
 #include <float.h>
 #include <math.h>
 
 #include "malloc.h"
 #include "icmphdr.h"
+#include "utils.h"
 
 // https://hpd.gasmi.net/
 
@@ -56,26 +54,6 @@ void	craft_traceroute_packet(icmphdr_t *buf)
 	buf->checksum = checksum(buf, PCK_SIZE);
 }
 
-struct timeval	gettime() {
-	struct timeval	time;
-	if (gettimeofday(&time, NULL) < 0) {
-		perror("ping: gettimeofday");
-		exit(1);
-	}
-	return (time);
-}
-
-int	memdiff(void *a, void *b, size_t len) {
-	for (size_t i = 0; i < len; ++i) {
-		if (((uint8_t *)a)[i] != ((uint8_t *)b)[i]) {
-			return (1);
-		}
-	}
-	return (0);
-}
-
-#define iss(s, const_s) !memdiff(const_s, s, sizeof(const_s))
-
 void	help() {
 	puts("Usage:");
 	puts("  ./traceroute host");
@@ -96,29 +74,10 @@ void	help() {
 	exit(1);
 }
 
-void	die(char *s) {
-	fprintf(stderr, "traceroute: %s\n", s);
-	exit(1);
-}
-
-int	is_digit(int c) {
-	return (c >= '0' && c <= '9');
-}
-
-uint64_t	parse_u64(const char *s) {
-	if (!s || !is_digit(*s)) {
-		die("expected a unsigned number");
-	}
-	uint64_t	n = 0;
-	while (is_digit(*s)) {
-		n = n * 10 + *s - '0';
-		++s;
-	}
-	return (n);
-}
-
 int		main(int ac, char **av)
 {
+	/** Parse */
+
 	if (ac < 2) {
 		help();
 	}
@@ -178,6 +137,8 @@ int		main(int ac, char **av)
 		die("first hop out of range");
 	}
 
+	/** Setup */
+
 	struct addrinfo	*addr;
 
 	struct addrinfo hints = {0};
@@ -218,6 +179,8 @@ int		main(int ac, char **av)
 		host, hostip_s,
 		max_hops, PCK_SIZE + sizeof(struct ip)
 	);
+
+	/** Exec */
 
 	while (hops <= max_hops) {
 		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops)) < 0) {
